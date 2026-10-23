@@ -138,6 +138,18 @@ td.num,th.num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-n
   td,th{padding:4px 6px;font-size:11px}
 }
 .print-only{display:none}
+.fbtn{border:0;background:none;cursor:pointer;padding:1px 3px;margin-left:4px;color:var(--muted);opacity:.55;vertical-align:middle;border-radius:4px}
+th:hover .fbtn{opacity:1} .fbtn.on{color:#fff;background:var(--primary);opacity:1}
+.fpop{position:fixed;z-index:60;width:300px;background:var(--panel);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.25);padding:12px}
+.fpop-h,.fpop-f{display:flex;align-items:center;gap:6px}.fpop-h{justify-content:space-between;margin-bottom:8px}.fpop-f{margin-top:10px}.fpop .sp{flex:1}
+.fpop .x{border:0;background:none;font-size:20px;cursor:pointer;color:var(--muted)}
+.fp-op{margin-bottom:6px}
+.fp-list{max-height:230px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:4px 8px;margin-top:4px}
+.fp-list label{display:flex;gap:6px;align-items:center;margin:3px 0;font-size:13px;color:var(--text)}
+@media print{.fbtn,.fpop{display:none!important}}
+.fcount{margin:4px 0}
+.sel-cnt{font-weight:600;color:var(--primary)}
+#rt-new{background:var(--amber-soft);border-color:var(--amber);color:var(--amber)}
 </style>
 </head>
 <body>
@@ -210,7 +222,156 @@ function debounce(fn, ms=250){ let t; return (...a) => { clearTimeout(t); t = se
 function toast(msg, type){ const el = document.createElement('div'); el.className = 'toast ' + (type||''); el.textContent = msg; $('#toasts').append(el); setTimeout(() => el.remove(), type==='error' ? 7000 : 3500); }
 function showErr(e){ console.error(e); toast('Lỗi: ' + (e?.message || e), 'error'); }
 function openModal(title, html, wide){ $('#modal-title').textContent = title; $('#modal-body').innerHTML = html; $('#modal-box').classList.toggle('wide', !!wide); $('#modal').classList.remove('hidden'); }
-function closeModal(){ $('#modal').classList.add('hidden'); $('#modal-body').innerHTML = ''; }
+function closeModal(){ $('#modal').classList.add('hidden'); $('#modal-body').innerHTML = ''; if(rt.pending) setTimeout(rtRefresh, 300); }
+/* ---------- Lọc theo từng cột kiểu Excel (nút phễu ở tiêu đề mọi bảng) ---------- */
+const colFilters = {};
+const FUNNEL = '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M3 4h18l-7 8.5V19l-4 2v-8.5z"/></svg>';
+const cellVal = (r, ci) => (r.cells[ci]?.innerText || '').split('\n')[0].trim();
+const fkey = (t, ci) => t._base + ci + '|' + t._ths[ci].textContent.trim();
+function enhanceTables(root){
+  if(!root) return;
+  $$('table', root).forEach((t, ti) => {
+    if(t.dataset.enh || !t.tHead || !t.tBodies[0]) return;
+    if([...t.tBodies[0].rows].filter(r => r.cells.length > 1).length < 2) return;
+    t.dataset.enh = '1';
+    t._ths = [...t.tHead.rows[0].cells];
+    t._base = (location.hash.split('?')[0] || '#dashboard') + '|' + (root.id || '') + '|' + ti + '|';
+    t._ths.forEach((th, ci) => {
+      const label = th.textContent.trim();
+      if(!label || th.querySelector('input')) return;
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'fbtn'; b.title = 'Lọc cột ' + label; b.innerHTML = FUNNEL;
+      b.onclick = e => { e.stopPropagation(); openColFilter(t, ci, label, b); };
+      th.append(b);
+    });
+    t._cnt = document.createElement('div'); t._cnt.className = 'small muted fcount no-print';
+    (t.closest('.tbl-wrap') || t).before(t._cnt);
+    applyColFilters(t);
+  });
+}
+function testF(f, v){
+  if(f.vals && !f.vals.includes(v)) return false;
+  if(f.text){ const n = norm(v), x = norm(f.text);
+    if(f.op === 'eq' ? n !== x : f.op === 'starts' ? !n.startsWith(x) : f.op === 'not' ? n.includes(x) : !n.includes(x)) return false; }
+  return true;
+}
+function applyColFilters(t){
+  const act = t._ths.map((_, ci) => [ci, colFilters[fkey(t, ci)]]).filter(([, f]) => f && (f.text || f.vals));
+  const all = [...t.tBodies[0].rows]; let shown = 0;
+  all.forEach(r => { const ok = !act.length || (r.cells.length >= t._ths.length && act.every(([ci, f]) => testF(f, cellVal(r, ci)))); r.style.display = ok ? '' : 'none'; if(ok) shown++; });
+  t._ths.forEach((th, ci) => $('.fbtn', th)?.classList.toggle('on', act.some(a => a[0] === ci)));
+  t._cnt.innerHTML = act.length ? `Đang lọc ${act.length} cột: hiển thị <b>${shown}</b>/${all.length} dòng · <a href="#" class="cf-clear">Bỏ tất cả bộ lọc</a>` : '';
+  $('.cf-clear', t._cnt)?.addEventListener('click', e => { e.preventDefault(); t._ths.forEach((_, ci) => delete colFilters[fkey(t, ci)]); applyColFilters(t); });
+  updSelCount();
+}
+function closeColFilter(){ $('#fpop')?.remove(); }
+function openColFilter(t, ci, label, btn){
+  closeColFilter();
+  const k = fkey(t, ci), f = colFilters[k] || {op:'contains', text:'', vals:null};
+  const vals = [...new Set([...t.tBodies[0].rows].filter(r => r.cells.length >= t._ths.length).map(r => cellVal(r, ci)))].sort((a, b) => a.localeCompare(b, 'vi', {numeric:true}));
+  const pop = document.createElement('div'); pop.id = 'fpop'; pop.className = 'fpop';
+  pop.innerHTML = `<div class="fpop-h"><b>${esc(label)}</b><button class="x" type="button" aria-label="Đóng">×</button></div>
+    <select class="fp-op"><option value="contains">Chứa</option><option value="eq">Bằng</option><option value="starts">Bắt đầu bằng</option><option value="not">Không chứa</option></select>
+    <input class="fp-text" placeholder="Nhập giá trị lọc" value="${esc(f.text || '')}">
+    <div class="small muted" style="margin:10px 0 4px">Hoặc tích chọn giá trị:</div>
+    <input class="fp-search" placeholder="Tìm trong danh sách…">
+    <div class="fp-list"><label><input type="checkbox" class="fp-all"> <i>(Chọn tất cả)</i></label>
+      ${vals.map(v => `<label><input type="checkbox" class="fp-v" value="${esc(v)}" ${!f.vals || f.vals.includes(v) ? 'checked' : ''}> ${v ? esc(v) : '<i>(Trống)</i>'}</label>`).join('')}</div>
+    <div class="fpop-f"><button class="btn sm fp-clear" type="button">Bỏ lọc</button><span class="sp"></span><button class="btn sm fp-cancel" type="button">Hủy</button><button class="btn sm primary fp-ok" type="button">Áp dụng</button></div>`;
+  document.body.append(pop);
+  $('.fp-op', pop).value = f.op || 'contains';
+  const all = $('.fp-all', pop), boxes = $$('.fp-v', pop), sync = () => all.checked = boxes.every(b => b.checked);
+  sync();
+  all.onchange = () => boxes.forEach(b => { if(b.parentElement.style.display !== 'none') b.checked = all.checked; });
+  boxes.forEach(b => b.onchange = sync);
+  $('.fp-search', pop).oninput = e => { const q = norm(e.target.value); boxes.forEach(b => b.parentElement.style.display = norm(b.value).includes(q) ? '' : 'none'); };
+  const r = btn.getBoundingClientRect();
+  pop.style.left = Math.max(8, Math.min(r.left - 10, innerWidth - 316)) + 'px';
+  pop.style.top = Math.max(8, Math.min(r.bottom + 4, innerHeight - pop.offsetHeight - 8)) + 'px';
+  const done = () => { applyColFilters(t); closeColFilter(); };
+  $('.x', pop).onclick = $('.fp-cancel', pop).onclick = closeColFilter;
+  $('.fp-clear', pop).onclick = () => { delete colFilters[k]; done(); };
+  $('.fp-ok', pop).onclick = () => {
+    const sel = boxes.filter(b => b.checked).map(b => b.value), text = $('.fp-text', pop).value.trim();
+    const nf = {op:$('.fp-op', pop).value, text, vals: sel.length === boxes.length ? null : sel};
+    if(!nf.text && !nf.vals) delete colFilters[k]; else colFilters[k] = nf;
+    done();
+  };
+  $('.fp-text', pop).onkeydown = e => { if(e.key === 'Enter') $('.fp-ok', pop).click(); };
+  setTimeout(() => $('.fp-text', pop).focus());
+}
+document.addEventListener('mousedown', e => { const p = $('#fpop'); if(p && !p.contains(e.target) && !e.target.closest('.fbtn')) closeColFilter(); });
+new MutationObserver(debounce(() => { enhanceTables($('#page')); enhanceTables($('#modal-body')); }, 60)).observe(document.body, {childList:true, subtree:true});
+
+/* ---------- Chọn nhiều dòng & thao tác hàng loạt ---------- */
+const chkTh = '<th class="no-print"><input type="checkbox" class="chk-all" title="Chọn tất cả dòng đang hiển thị"></th>';
+const chkTd = id => `<td class="no-print"><input type="checkbox" class="chk" value="${esc(id)}"></td>`;
+function selIds(root){ return $$('.chk:checked', root || $('#page')).filter(c => c.closest('tr').style.display !== 'none').map(c => c.value); }
+function updSelCount(){ const n = selIds().length; $$('.sel-cnt').forEach(el => el.textContent = n ? `Đã chọn ${n} dòng` : ''); }
+document.addEventListener('change', e => {
+  if(e.target.classList.contains('chk-all')) $$('tbody tr', e.target.closest('table')).forEach(tr => { const c = $('.chk', tr); if(c && tr.style.display !== 'none') c.checked = e.target.checked; });
+  if(e.target.matches('.chk, .chk-all')) updSelCount();
+});
+function needSel(ids){ if(!ids.length){ toast('Chưa chọn dòng nào – tích ô ở đầu dòng.', 'error'); return false; } return true; }
+function fieldInput(f){
+  if(f.type === 'select') return `<select name="${f.k}">${f.options}</select>`;
+  if(f.type === 'bool') return `<select name="${f.k}"><option value="1">Có</option><option value="0">Không</option></select>`;
+  return `<input name="${f.k}" type="${f.type || 'text'}" ${f.attrs || ''}>`;
+}
+function bulkEditDlg(title, n, fields, onSave){
+  openModal(`${title} – ${n} dòng`, `<form id="fb"><p class="small muted">Tích "Cập nhật" ở trường muốn đổi (tự tích khi bạn nhập). Trường không tích được giữ nguyên.</p>
+    <div class="tbl-wrap"><table><tbody>${fields.map(f => `<tr><td style="width:110px"><label style="margin:0;display:flex;gap:4px;align-items:center"><input type="checkbox" data-on="${f.k}"> Cập nhật</label></td>
+      <td style="width:200px">${esc(f.label)}</td><td>${fieldInput(f)}</td></tr>`).join('')}</tbody></table></div>
+    <div class="modal-foot"><button type="button" class="btn" onclick="closeModal()">Hủy</button><button class="btn primary">Áp dụng cho ${n} dòng</button></div></form>`, true);
+  const F = $('#fb');
+  F.addEventListener('input', e => { if(e.target.name) $(`[data-on="${e.target.name}"]`, F).checked = true; });
+  F.onsubmit = async e => {
+    e.preventDefault(); const patch = {};
+    for(const f of fields){ if(!$(`[data-on="${f.k}"]`, F).checked) continue; let v = F.elements[f.k].value;
+      v = f.type === 'bool' ? v === '1' : f.type === 'number' ? (v === '' ? null : Number(v)) : (v === '' ? null : v); patch[f.k] = v; }
+    if(!Object.keys(patch).length) return toast('Chưa chọn trường nào để cập nhật.', 'error');
+    const btn = $('button.primary', F); btn.disabled = true;
+    try{ await onSave(patch); closeModal(); route(); }catch(err){ showErr(err); btn.disabled = false; }
+  };
+}
+async function bulkUpdate(table, ids, patch, key='id'){
+  let n = 0;
+  for(const c of chunk(ids, 100)) n += must(await sb.from(table).update(patch).in(key, c).select(key)).length;
+  return n;
+}
+async function bulkDelete(table, ids, key='id'){
+  let ok = 0; const fail = [];
+  for(const id of ids){ const r = await sb.from(table).delete().eq(key, id).select(key); if(r.error) fail.push(`${id}: ${r.error.message}`); else ok += r.data.length; }
+  return {ok, fail};
+}
+function bulkReport(verb, done, total, fail){
+  let m = `${verb} ${done}/${total} dòng.`;
+  if(done < total) m += ' Các dòng còn lại không thuộc quyền của bạn hoặc không được phép thay đổi.';
+  if(fail && fail.length) m += ' Lỗi: ' + fail.slice(0, 3).join(' | ');
+  toast(m, done < total ? 'error' : '');
+}
+
+/* ---------- Đồng bộ dữ liệu mới nhất giữa các máy (Supabase Realtime) ---------- */
+const rt = {timer:null, pending:false, busy:0};
+const RT_TABLES = ['suppliers','contract_lines','payment_requests','payment_schedule','payments','payment_matches','profiles','app_settings'];
+function startRealtime(){
+  try{ const ch = sb.channel('db-' + me.id); RT_TABLES.forEach(t => ch.on('postgres_changes', {event:'*', schema:'public', table:t}, onDbChange)); ch.subscribe(); }
+  catch(e){ console.warn('Realtime', e); }
+}
+function onDbChange(){
+  clearTimeout(rt.timer);
+  rt.timer = setTimeout(() => {
+    if(rt.busy) return;
+    const typing = document.activeElement && document.activeElement.matches('#page input:not([type=checkbox]), #page textarea');
+    if(!$('#modal').classList.contains('hidden') || typing || selIds().length){ rt.pending = true; $('#rt-new')?.classList.remove('hidden'); return; }
+    rtRefresh();
+  }, 1200);
+}
+async function rtRefresh(){
+  if(!me) return;
+  rt.pending = false; $('#rt-new')?.classList.add('hidden');
+  const y = window.scrollY; await loadSuppliers(); await route(); window.scrollTo(0, y);
+}
+
 function chunk(a, n){ const r = []; for(let i=0;i<a.length;i+=n) r.push(a.slice(i,i+n)); return r; }
 function match(q, ...fields){ if(!q) return true; const n = norm(q); return fields.some(f => norm(f).includes(n)); }
 function opts(map, sel, empty){ return (empty!=null ? `<option value="">${esc(empty)}</option>` : '') + Object.entries(map).map(([k,v]) => `<option value="${esc(k)}" ${k===sel?'selected':''}>${esc(Array.isArray(v)?v[0]:v)}</option>`).join(''); }
@@ -420,7 +581,7 @@ function changePwDlg(){
     if(f.get('p1') !== f.get('p2')) return toast('Hai mật khẩu không khớp.', 'error');
     try{ must(await sb.auth.updateUser({password:f.get('p1')})); closeModal(); toast('Đã đổi mật khẩu.'); }catch(err){ showErr(err); } };
 }
-async function logout(){ await sb.auth.signOut(); location.hash = ''; }
+async function logout(){ try{ sb.removeAllChannels(); }catch(_){} await sb.auth.signOut(); location.hash = ''; }
 
 let started = false;
 async function boot(){
@@ -454,9 +615,10 @@ async function startApp(session){
     }
     const st = must(await sb.from('app_settings').select('*'));
     st.forEach(r => settings[r.key] = isNaN(r.value) ? r.value : Number(r.value));
-    if(isKT()){ try{ await sb.rpc('generate_schedule'); }catch(_){} }
+    if(isKT()){ try{ await sb.rpc('generate_schedule'); }catch(_){} await autoRematch(); }
     await loadSuppliers();
     renderShell();
+    startRealtime();
     await route();
     remindOnce();
   }catch(e){ showErr(e); started = false; me = null; renderLogin(); }
@@ -474,6 +636,7 @@ const ROUTES = {
   yeucau:{t:'Yêu cầu thanh toán', f:()=>pageYeuCau(), r:['ke_toan','bo_phan']},
   doichieu:{t:'Import UNC/PC & đối chiếu', f:()=>pageDoiChieu(), r:['ke_toan']},
   tuoino:{t:'Báo cáo tuổi nợ', f:()=>pageTuoiNo(), r:['ke_toan']},
+  socongno:{t:'Sổ chi tiết công nợ phải trả', f:()=>pageSoCongNo(), r:['ke_toan']},
   nguoidung:{t:'Người dùng & cài đặt', f:()=>pageUsers(), r:['ke_toan']},
   nhatky:{t:'Nhật ký thay đổi', f:()=>pageAudit(), r:['ke_toan']}
 };
@@ -486,14 +649,16 @@ function renderShell(){
       <div class="side-foot"><div><b>${esc(me.full_name || me.email)}</b><br>${esc(ROLES[me.role])}${me.department ? ' · ' + esc(deptName(me.department)) : ''}</div>
       <div><button class="btn sm" onclick="changePwDlg()">Đổi mật khẩu</button> <button class="btn sm" onclick="logout()">Đăng xuất</button></div></div></aside>
     <main><header class="top"><h2 id="page-title"></h2>
+      <div style="display:flex;gap:8px;align-items:center"><button class="btn sm hidden no-print" id="rt-new" onclick="rtRefresh()" title="Người khác vừa cập nhật dữ liệu">● Có dữ liệu mới – Tải lại</button>
       <button class="bell no-print" onclick="location.hash='#lich'" title="Khoản đến hạn tuần này và quá hạn">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
-        Nhắc thanh toán <span class="cnt" id="bell-cnt">0</span></button></header>
+        Nhắc thanh toán <span class="cnt" id="bell-cnt">0</span></button></div></header>
     <section id="page"></section></main></div>`;
 }
 async function route(){
   const k = (location.hash.slice(1) || 'dashboard').split('?')[0];
   const key = ROUTES[k] && ROUTES[k].r.includes(me.role) ? k : 'dashboard';
+  closeColFilter();
   $$('.side nav a').forEach(a => a.classList.toggle('active', a.dataset.k === key));
   $('#page-title').textContent = ROUTES[key].t;
   $('#page').innerHTML = '<div class="loading">Đang tải…</div>';
@@ -529,7 +694,8 @@ async function loadSchedule(build){
 }
 function schedTable(rows, o={}){
   if(!rows.length) return `<div class="tbl-wrap"><div class="empty">${o.empty || 'Không có khoản nào.'}</div></div>`;
-  const body = rows.map(r => `<tr>
+  const sel = o.sel && isKT();
+  const body = rows.map(r => `<tr>${sel ? chkTd(r.id) : ''}
     <td class="nowrap">${fdate(r.due_date)}<div class="small muted">Tuần ${r.week_no}</div></td>
     <td>${esc(r.nhom)}</td>
     <td><b>${esc(r.ma_ncc)}</b><div class="small muted clip">${esc(r.ten_ncc || '')}</div></td>
@@ -541,8 +707,8 @@ function schedTable(rows, o={}){
     <td>${badge(STATUS, r.status)}${r.status !== 'chua_den_han' && r.days_late > 0 ? `<div class="small muted">${r.status==='da_thanh_toan'?'Trễ':'Quá'} ${r.days_late} ngày</div>` : ''}</td>
     <td>${flagsHtml(r.flags)}</td>
     <td class="nowrap no-print">${schedActions(r)}</td></tr>`).join('');
-  const foot = o.foot === false ? '' : `<tfoot><tr><td colspan="5">Cộng (${rows.length} khoản)</td><td class="num">${num(sum(rows, r=>r.expected_amount))}</td><td class="num">${num(sum(rows, r=>r.paid_amount))}</td><td class="num">${num(sum(rows, r=>r.remaining))}</td><td colspan="3"></td></tr></tfoot>`;
-  return `<div class="tbl-wrap"><table><thead><tr><th>Hạn TT</th><th>Nhóm</th><th>NCC</th><th>Nội dung</th><th>Kỳ phí</th><th class="num">Phải trả</th><th class="num">Đã trả</th><th class="num">Còn lại</th><th>Trạng thái</th><th>Cảnh báo</th><th class="no-print"></th></tr></thead><tbody>${body}</tbody>${foot}</table></div>`;
+  const foot = o.foot === false ? '' : `<tfoot><tr><td colspan="${sel ? 6 : 5}">Cộng (${rows.length} khoản)</td><td class="num">${num(sum(rows, r=>r.expected_amount))}</td><td class="num">${num(sum(rows, r=>r.paid_amount))}</td><td class="num">${num(sum(rows, r=>r.remaining))}</td><td colspan="3"></td></tr></tfoot>`;
+  return `<div class="tbl-wrap"><table><thead><tr>${sel ? chkTh : ''}<th>Hạn TT</th><th>Nhóm</th><th>NCC</th><th>Nội dung</th><th>Kỳ phí</th><th class="num">Phải trả</th><th class="num">Đã trả</th><th class="num">Còn lại</th><th>Trạng thái</th><th>Cảnh báo</th><th class="no-print"></th></tr></thead><tbody>${body}</tbody>${foot}</table></div>`;
 }
 function schedActions(r){
   const a = [];
@@ -656,6 +822,7 @@ async function pageLich(){
       <input class="grow" id="l-q" placeholder="Tìm NCC, nội dung, số HĐ…" value="${esc(s.q)}">
       <button class="btn" id="l-xls">Xuất Excel</button><button class="btn" onclick="window.print()">In / PDF</button>
     </div>
+    ${isKT() ? `<div class="toolbar no-print"><span class="sel-cnt"></span><button class="btn" id="l-bedit">Sửa hàng loạt</button><button class="btn" id="l-bacc" title="Ghi nhận số đã trả = số phải trả cho các khoản thiếu/thừa">Chấp nhận lệch hàng loạt</button></div>` : ''}
     <div class="print-only"><h2>LỊCH THANH TOÁN NHÀ CUNG CẤP – THÁNG ${fper(s.month)}</h2></div>
     <div id="l-body"><div class="loading">Đang tải…</div></div>`;
   const reload = () => { s.month = $('#l-month').value || s.month; pageLich(); };
@@ -671,15 +838,16 @@ async function pageLich(){
     const carry = f.filter(r => r.due_date < start && r.status !== 'da_thanh_toan');
     const today = todayISO();
     let html = '';
-    if(carry.length) html += `<div class="week"><div class="week-h" style="background:var(--red-soft)"><b>Còn tồn từ các tháng trước</b><span class="pill-sum">${carry.length} khoản · còn lại ${vnd(sum(carry, r=>r.remaining))}</span></div>${schedTable(carry)}</div>`;
+    if(carry.length) html += `<div class="week"><div class="week-h" style="background:var(--red-soft)"><b>Còn tồn từ các tháng trước</b><span class="pill-sum">${carry.length} khoản · còn lại ${vnd(sum(carry, r=>r.remaining))}</span></div>${schedTable(carry, {sel:true})}</div>`;
     for(let w = 1; w <= 4; w++){
       const [a, b] = weekRange(s.month, w);
       const x = f.filter(r => r.due_date >= a && r.due_date <= b);
       const now = today >= a && today <= b;
       html += `<div class="week"><div class="week-h ${now ? 'now' : ''}"><b>Tuần ${w} (${fdate(a).slice(0,5)} – ${fdate(b).slice(0,5)})${now ? ' · tuần này' : ''}</b>
-        <span class="pill-sum">${x.length} khoản · phải trả ${vnd(sum(x, r=>r.expected_amount))} · còn lại ${vnd(sum(x, r=>r.remaining))}</span></div>${schedTable(x, {empty:'Không có khoản nào.'})}</div>`;
+        <span class="pill-sum">${x.length} khoản · phải trả ${vnd(sum(x, r=>r.expected_amount))} · còn lại ${vnd(sum(x, r=>r.remaining))}</span></div>${schedTable(x, {empty:'Không có khoản nào.', sel:true})}</div>`;
     }
     $('#l-body').innerHTML = html;
+    updSelCount();
     $('#l-xls').onclick = () => exportXlsx(`Lich_thanh_toan_${s.month}.xlsx`, [['Lich TT', f.map(r => ({
       'Tuần': r.due_date < start ? 'Tồn trước' : 'Tuần ' + r.week_no, 'Hạn TT': fdate(r.due_date), 'Nhóm': r.nhom, 'Mã NCC': r.ma_ncc, 'Tên NCC': r.ten_ncc,
       'Nội dung': r.noi_dung, 'Số HĐ': r.so_hop_dong, 'Kỳ phí': fper(r.fee_period), 'Phải trả': r.expected_amount, 'Đã trả': r.paid_amount, 'Còn lại': r.remaining,
@@ -687,6 +855,17 @@ async function pageLich(){
       `LỊCH THANH TOÁN NHÀ CUNG CẤP – THÁNG ${fper(s.month)}`]]);
   };
   ['#l-nhom','#l-dept','#l-status'].forEach(id => { const el = $(id); if(el) el.onchange = draw; });
+  if(isKT()){
+    $('#l-bedit').onclick = () => { const ids = selIds().map(Number); if(!needSel(ids)) return;
+      bulkEditDlg('Sửa khoản thanh toán', ids.length, [
+        {k:'due_date', label:'Hạn thanh toán', type:'date'}, {k:'invoice_no', label:'Số hóa đơn'}, {k:'ghi_chu', label:'Ghi chú'}],
+        async patch => bulkReport('Đã cập nhật', await bulkUpdate('payment_schedule', ids, patch), ids.length)); };
+    $('#l-bacc').onclick = async () => { const ids = selIds().map(Number).filter(id => { const r = cache.sched.get(id); return r && (r.flags.includes('thieu') || r.flags.includes('trung')); });
+      if(!ids.length) return toast('Không có khoản thiếu/thừa nào trong các dòng đã chọn.', 'error');
+      if(!confirm(`Ghi nhận số phải trả = số đã trả cho ${ids.length} khoản (gắn cờ Lệch giá)?`)) return;
+      try{ for(const id of ids){ const r = cache.sched.get(id); must(await sb.from('payment_schedule').update({expected_amount:r.paid_amount, ghi_chu:[r.ghi_chu, 'Chấp nhận lệch giá ' + fdate(todayISO())].filter(Boolean).join('; ')}).eq('id', id)); }
+        toast(`Đã cập nhật ${ids.length} khoản.`); route(); }catch(e){ showErr(e); } };
+  }
   $('#l-q').oninput = debounce(draw);
   draw();
 }
@@ -719,11 +898,13 @@ async function pageNcc(){
     </div>
     <div class="toolbar no-print">
       <button class="btn primary" id="n-add">+ Thêm dòng hợp đồng</button>
-      ${isKT() ? `<button class="btn" id="n-imp">Import danh sách NCC (Excel)</button><button class="btn" onclick="downloadTemplate('ncc')">Tải file mẫu</button>
-        <button class="btn" id="n-bulk-ok">Duyệt đã chọn</button><button class="btn" id="n-bulk-rule">Xác nhận quy tắc đã chọn</button>` : ''}
+      ${isKT() ? `<button class="btn" id="n-imp">Import danh sách NCC (Excel)</button><button class="btn" onclick="downloadTemplate('ncc')">Tải file mẫu</button>` : ''}
       <span class="sp"></span><button class="btn" id="n-xls">Xuất Excel</button>
       <input type="file" id="n-file" accept=".xlsx,.xls" class="hidden">
     </div>
+    <div class="toolbar no-print"><span class="sel-cnt"></span>
+      ${isKT() ? '<button class="btn" id="n-bulk-ok">Duyệt đã chọn</button><button class="btn" id="n-bulk-rule">Xác nhận quy tắc đã chọn</button>' : ''}
+      <button class="btn" id="n-bulk-edit">Sửa hàng loạt</button><button class="btn danger" id="n-bulk-del">Xóa đã chọn</button></div>
     <div id="n-res"></div><div id="n-tbl"></div>`;
   const draw = () => {
     s.q = $('#n-q').value; s.nhom = $('#n-nhom').value; s.appr = $('#n-appr').value; s.flag = $('#n-flag').value; s.dept = $('#n-dept')?.value || ''; s.inactive = $('#n-inact').checked;
@@ -733,9 +914,9 @@ async function pageNcc(){
       && match(s.q, l.ma_ncc, l.ten_ncc, l.so_hop_dong, l.phu_luc, l.noi_dung));
     const T = $('#n-tbl');
     T.innerHTML = !f.length ? '<div class="tbl-wrap"><div class="empty">Không có dòng hợp đồng.</div></div>' : `<div class="tbl-wrap"><table><thead><tr>
-      ${isKT() ? '<th class="no-print"><input type="checkbox" id="n-all"></th>' : ''}<th>Nhóm</th><th>NCC</th><th>Số HĐ / Phụ lục</th><th>Nội dung</th><th>Hiệu lực</th><th class="num">Tổng tiền/ĐVT</th><th>Chu kỳ</th><th>Quy tắc hạn TT</th><th>Bộ phận</th><th>Duyệt</th><th>Cảnh báo</th><th class="no-print"></th></tr></thead><tbody>
+      ${chkTh}<th>Nhóm</th><th>NCC</th><th>Số HĐ / Phụ lục</th><th>Nội dung</th><th>Hiệu lực</th><th class="num">Tổng tiền/ĐVT</th><th>Chu kỳ</th><th>Quy tắc hạn TT</th><th>Bộ phận</th><th>Duyệt</th><th>Cảnh báo</th><th class="no-print"></th></tr></thead><tbody>
       ${f.map(l => `<tr style="${l.active ? '' : 'opacity:.55'}">
-        ${isKT() ? `<td class="no-print"><input type="checkbox" class="n-chk" value="${l.id}"></td>` : ''}
+        ${chkTd(l.id)}
         <td>${esc(l.nhom)}</td><td><b>${esc(l.ma_ncc)}</b><div class="small muted clip">${esc(l.ten_ncc || '')}</div></td>
         <td>${esc(l.so_hop_dong || '')}<div class="small muted">${esc(l.phu_luc || '')}</div></td>
         <td class="ellip">${esc(l.noi_dung || '')}<div class="small muted">${esc(l.lich_tt || '')}</div></td>
@@ -749,7 +930,7 @@ async function pageNcc(){
         <td class="nowrap no-print">${pdfLink(l.contract_pdf)} <button class="btn sm" data-le="${l.id}">Sửa</button>
           ${isKT() && l.approval_status === 'cho_duyet' ? `<button class="btn sm" data-lok="${l.id}">Duyệt</button> <button class="btn sm danger" data-lno="${l.id}">Từ chối</button>` : ''}</td></tr>`).join('')}
       </tbody></table></div>`;
-    $('#n-all')?.addEventListener('change', e => $$('.n-chk').forEach(c => c.checked = e.target.checked));
+    updSelCount();
     $$('[data-le]').forEach(b => b.onclick = () => lineDlg(cache.lines.get(Number(b.dataset.le))));
     $$('[data-lok]').forEach(b => b.onclick = () => approveLines([Number(b.dataset.lok)], 'da_duyet'));
     $$('[data-lno]').forEach(b => b.onclick = () => approveLines([Number(b.dataset.lno)], 'tu_choi'));
@@ -764,17 +945,47 @@ async function pageNcc(){
   ['#n-nhom','#n-appr','#n-flag','#n-dept','#n-inact'].forEach(id => { const el = $(id); if(el) el.onchange = draw; });
   $('#n-q').oninput = debounce(draw);
   $('#n-add').onclick = () => lineDlg(null);
+  const sel = () => selIds().map(Number);
+  $('#n-bulk-edit').onclick = () => { const ids = sel(); if(!needSel(ids)) return;
+    const f = [{k:'nhom', label:'Nhóm', type:'select', options:grpOpts('')},
+      {k:'ngay_bat_dau', label:'Ngày bắt đầu', type:'date'}, {k:'ngay_ket_thuc', label:'Ngày kết thúc', type:'date'},
+      {k:'chu_ky', label:'Chu kỳ thanh toán', type:'select', options:[1,2,3,6,12].map(c => `<option value="${c}">${cycleText(c)}</option>`).join('')},
+      {k:'due_day', label:'Ngày hạn TT (1–31)', type:'number', attrs:'min="1" max="31"'},
+      {k:'due_month_offset', label:'Tháng thanh toán', type:'select', options:[0,1,2,3,6,12].map(o => `<option value="${o}">${o===0?'Cùng tháng phí':o===1?'Tháng sau':`+${o} tháng`}</option>`).join('')},
+      {k:'due_rule_confirmed', label:'Đã xác nhận quy tắc hạn TT', type:'bool'},
+      {k:'lich_tt', label:'Lịch TT (ghi chú gốc)'}, {k:'ghi_chu', label:'Ghi chú'}];
+    if(isKT()) f.splice(1, 0, {k:'department', label:'Bộ phận phụ trách', type:'select', options:opts(DEPTS, '', '(Không gán)')}), f.push({k:'active', label:'Đang hiệu lực', type:'bool'});
+    bulkEditDlg('Sửa dòng hợp đồng', ids.length, f, async patch => {
+      if(patch.chu_ky != null) patch.chu_ky = Number(patch.chu_ky);
+      if(patch.due_month_offset != null) patch.due_month_offset = Number(patch.due_month_offset);
+      if(patch.due_rule_confirmed && !('due_day' in patch) && ids.some(id => !cache.lines.get(id).due_day)) throw new Error('Có dòng chưa có ngày hạn TT – nhập "Ngày hạn TT" cùng lúc hoặc bỏ chọn các dòng đó.');
+      if(patch.due_rule_confirmed && 'due_day' in patch && !patch.due_day) throw new Error('Phải nhập ngày hạn TT khi xác nhận quy tắc.');
+      bulkReport('Đã cập nhật', await bulkUpdate('contract_lines', ids, patch), ids.length);
+      await autoRematch();
+    });
+  };
+  $('#n-bulk-del').onclick = async () => { const ids = sel(); if(!needSel(ids)) return;
+    try{
+      const paid = new Set((await fetchIn('payment_schedule', 'id,contract_line_id,paid_amount', 'contract_line_id', ids)).filter(x => Number(x.paid_amount) > 0).map(x => x.contract_line_id));
+      const del = ids.filter(id => !paid.has(id)), keep = ids.filter(id => paid.has(id));
+      if(!confirm(`Xóa ${del.length} dòng hợp đồng (kèm các kỳ lịch TT chưa thanh toán)?` + (keep.length ? `
+${keep.length} dòng đã phát sinh thanh toán sẽ KHÔNG bị xóa${isKT() ? ' mà chuyển sang "Ngưng hiệu lực"' : ''}.` : ''))) return;
+      if(keep.length && isKT()) await bulkUpdate('contract_lines', keep, {active:false});
+      const r = await bulkDelete('contract_lines', del);
+      bulkReport('Đã xóa', r.ok, del.length, r.fail); if(keep.length && isKT()) toast(`${keep.length} dòng đã chuyển sang Ngưng hiệu lực.`);
+      route();
+    }catch(e){ showErr(e); }
+  };
   if(isKT()){
     $('#n-imp').onclick = () => $('#n-file').click();
     $('#n-file').onchange = async e => { const file = e.target.files[0]; e.target.value = ''; if(file) await importNcc(file); };
-    const sel = () => $$('.n-chk:checked').map(c => Number(c.value));
     $('#n-bulk-ok').onclick = () => { const ids = sel(); if(!ids.length) return toast('Chưa chọn dòng nào.'); approveLines(ids, 'da_duyet'); };
     $('#n-bulk-rule').onclick = async () => {
       const ids = sel(); if(!ids.length) return toast('Chưa chọn dòng nào.');
       const bad = ids.filter(id => !cache.lines.get(id).due_day);
       if(bad.length) return toast(`${bad.length} dòng chưa có ngày hạn TT – mở "Sửa" để nhập trước.`, 'error');
       if(!confirm(`Xác nhận quy tắc hạn TT cho ${ids.length} dòng? Lịch thanh toán sẽ được sinh cho các dòng đã duyệt.`)) return;
-      try{ for(const c of chunk(ids, 100)) must(await sb.from('contract_lines').update({due_rule_confirmed:true}).in('id', c)); toast('Đã xác nhận.'); pageNcc(); }catch(err){ showErr(err); }
+      try{ for(const c of chunk(ids, 100)) must(await sb.from('contract_lines').update({due_rule_confirmed:true}).in('id', c)); toast('Đã xác nhận.'); await autoRematch(); route(); }catch(err){ showErr(err); }
     };
   }
   draw();
@@ -784,22 +995,34 @@ async function approveLines(ids, status){
     if(status === 'tu_choi'){ const r = prompt('Lý do từ chối:'); if(r == null) return;
       for(const id of ids) must(await sb.from('contract_lines').update({approval_status:'tu_choi', ghi_chu:[cache.lines.get(id).ghi_chu, 'Từ chối: ' + r].filter(Boolean).join('; ')}).eq('id', id)); }
     else for(const c of chunk(ids, 100)) must(await sb.from('contract_lines').update({approval_status:'da_duyet', approved_by:me.id, approved_at:new Date().toISOString()}).in('id', c));
-    toast(status === 'da_duyet' ? 'Đã duyệt.' : 'Đã từ chối.'); route();
+    toast(status === 'da_duyet' ? 'Đã duyệt.' : 'Đã từ chối.'); await autoRematch(); route();
   }catch(e){ showErr(e); }
 }
 function drawSuppliers(lineCount){
   const s = nccState;
-  $('#n-body').innerHTML = `<div class="toolbar"><input class="grow" id="s-q" placeholder="Tìm mã, tên, MST…" value="${esc(s.q)}"><button class="btn primary" id="s-add">+ Thêm nhà cung cấp</button><button class="btn" id="s-xls">Xuất Excel</button></div><div id="s-tbl"></div>`;
+  $('#n-body').innerHTML = `<div class="toolbar"><input class="grow" id="s-q" placeholder="Tìm mã, tên, MST…" value="${esc(s.q)}"><button class="btn primary" id="s-add">+ Thêm nhà cung cấp</button><button class="btn" id="s-xls">Xuất Excel</button></div>
+    ${isKT() ? '<div class="toolbar no-print"><span class="sel-cnt"></span><button class="btn" id="s-bedit">Sửa hàng loạt</button><button class="btn danger" id="s-bdel">Xóa đã chọn</button></div>' : ''}<div id="s-tbl"></div>`;
   const draw = () => {
     s.q = $('#s-q').value;
     const f = [...suppliers.values()].filter(x => match(s.q, x.ma_ncc, x.ten_ncc, x.mst));
-    $('#s-tbl').innerHTML = `<div class="tbl-wrap"><table><thead><tr><th>Mã NCC</th><th>Tên nhà cung cấp</th><th>MST</th><th class="num">Số dòng HĐ</th><th>Ghi chú</th><th></th></tr></thead><tbody>
-      ${f.map(x => `<tr><td><b>${esc(x.ma_ncc)}</b></td><td>${esc(x.ten_ncc || '')}</td><td>${esc(x.mst || '')}</td><td class="num">${lineCount[x.ma_ncc] || 0}</td><td>${esc(x.ghi_chu || '')}</td>
+    $('#s-tbl').innerHTML = `<div class="tbl-wrap"><table><thead><tr>${isKT() ? chkTh : ''}<th>Mã NCC</th><th>Tên nhà cung cấp</th><th>MST</th><th class="num">Số dòng HĐ</th><th>Ghi chú</th><th></th></tr></thead><tbody>
+      ${f.map(x => `<tr>${isKT() ? chkTd(x.ma_ncc) : ''}<td><b>${esc(x.ma_ncc)}</b></td><td>${esc(x.ten_ncc || '')}</td><td>${esc(x.mst || '')}</td><td class="num">${lineCount[x.ma_ncc] || 0}</td><td>${esc(x.ghi_chu || '')}</td>
       <td>${isKT() ? `<button class="btn sm" data-se="${esc(x.ma_ncc)}">Sửa</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">Không có.</td></tr>'}</tbody></table></div>`;
     $$('[data-se]').forEach(b => b.onclick = () => supplierDlg(suppliers.get(b.dataset.se)));
     $('#s-xls').onclick = () => exportXlsx('Nha_cung_cap.xlsx', [['NCC', f.map(x => ({'Mã NCC':x.ma_ncc, 'Tên NCC':x.ten_ncc, 'MST':x.mst, 'Số dòng HĐ':lineCount[x.ma_ncc]||0, 'Ghi chú':x.ghi_chu}))]]);
   };
-  $('#s-q').oninput = debounce(draw); $('#s-add').onclick = () => supplierDlg(null); draw();
+  $('#s-q').oninput = debounce(draw); $('#s-add').onclick = () => supplierDlg(null);
+  if(isKT()){
+    $('#s-bedit').onclick = () => { const ids = selIds(); if(!needSel(ids)) return;
+      bulkEditDlg('Sửa nhà cung cấp', ids.length, [{k:'ghi_chu', label:'Ghi chú'}, {k:'mst', label:'MST'}],
+        async patch => bulkReport('Đã cập nhật', await bulkUpdate('suppliers', ids, patch, 'ma_ncc'), ids.length)); };
+    $('#s-bdel').onclick = async () => { const ids = selIds(); if(!needSel(ids)) return;
+      const used = ids.filter(id => lineCount[id]);
+      if(!confirm(`Xóa ${ids.length} nhà cung cấp?` + (used.length ? `\n${used.length} NCC còn dòng hợp đồng/chứng từ sẽ không xóa được: ${used.slice(0, 8).join(', ')}` : ''))) return;
+      const r = await bulkDelete('suppliers', ids, 'ma_ncc'); bulkReport('Đã xóa', r.ok, ids.length, r.fail.length ? ['NCC còn dữ liệu liên quan (hợp đồng / chứng từ / yêu cầu TT)'] : []);
+      await loadSuppliers(); route(); };
+  }
+  draw();
 }
 function supplierDlg(x){
   openModal(x ? 'Sửa nhà cung cấp' : 'Thêm nhà cung cấp', `<form id="fs"><div class="grid2">
@@ -891,12 +1114,13 @@ function lineDlg(l){
       const file = F.elements.pdf.files[0];
       if(file) row.contract_pdf = await uploadPdf(file, 'hop-dong', dept);
       if(l) must(await sb.from('contract_lines').update(row).eq('id', l.id)); else must(await sb.from('contract_lines').insert(row));
-      closeModal(); toast(isKT() ? 'Đã lưu dòng hợp đồng.' : 'Đã gửi – chờ kế toán duyệt.'); route();
+      closeModal(); toast(isKT() ? 'Đã lưu dòng hợp đồng.' : 'Đã gửi – chờ kế toán duyệt.'); await autoRematch(); route();
     }catch(err){ showErr(err); } finally { btn.disabled = false; }
   };
 }
 async function importNcc(file){
   const res = $('#n-res'); res.innerHTML = '<div class="hint">Đang đọc file…</div>';
+  rt.busy++;
   try{
     const S = await readSheet(file, 'ma ncc');
     const C = {nhom:S.col('nhom'), ma:S.col('ma ncc'), ten:S.col('ten ncc'), hd:S.col('hop dong so','so hop dong'), loai:S.col('loai thanh toan'), pl:S.col('phu luc hop dong','phu luc'),
@@ -923,31 +1147,58 @@ async function importNcc(file){
       const nh = cellNum(get(r,'nh')), lt = cellNum(get(r,'lt')), ck = cellNum(get(r,'ck'));
       const row = {nhom: GROUPS.includes(nhomRaw) ? nhomRaw : 'CENTRAL', ma_ncc:MA, so_hop_dong:cellStr(get(r,'hd')), loai_tt:cellStr(get(r,'loai')), phu_luc:cellStr(get(r,'pl')),
         ngay_bat_dau:cellDate(get(r,'bd')), ngay_ket_thuc:cellDate(get(r,'kt')), han_tt_text:cellStr(get(r,'han')), noi_dung:cellStr(get(r,'nd')), lich_tt:lich,
-        dvt, sl, don_gia:dg, thanh_tien:isVar ? null : tt, thue_suat:ts ?? 0, tien_thue:isVar ? null : cellNum(get(r,'tth')), tong_tien:isVar ? null : tong, is_variable:isVar,
+        dvt, sl, don_gia:dg, thanh_tien:isVar ? null : tt, thue_suat:ts ?? 0, tien_thue:isVar ? null : (cellNum(get(r,'tth')) ?? (tt != null ? Math.round(tt * (ts || 0) * 100) / 100 : null)), tong_tien:isVar ? null : tong, is_variable:isVar,
         department:deptOf(get(r,'bp')), chu_ky:[1,2,3,6,12].includes(ck) ? ck : pre.chu_ky,
         due_day: nh >= 1 && nh <= 31 ? nh : pre.due_day, due_month_offset: lt != null && lt >= 0 && lt <= 12 ? lt : pre.due_month_offset};
-      let key = [row.nhom, MA, row.so_hop_dong, row.phu_luc, row.noi_dung, row.ngay_bat_dau, isVar ? 'VAR' : dg, dvt, sl].map(x => norm(x ?? '')).join('|');
-      seen[key] = (seen[key] || 0) + 1; if(seen[key] > 1) key += '#' + seen[key];
-      row.import_key = key; lines.push(row);
+      row._expl = {due_day: nh >= 1 && nh <= 31, due_month_offset: lt != null && lt >= 0 && lt <= 12, chu_ky: [1,2,3,6,12].includes(ck), department: !!row.department};
+      lines.push(row);
     }
+    // Khóa khớp dòng cũ: Nhóm + Mã NCC + Số HĐ + Phụ lục + Nội dung (+ thứ tự nếu trùng, vd NET có 3 dòng cùng HĐ)
+    const mkey = l => [l.nhom, l.ma_ncc, l.so_hop_dong, l.phu_luc, l.noi_dung].map(x => norm(x ?? '')).join('|');
+    lines.forEach(l => { const k = mkey(l); seen[k] = (seen[k] || 0) + 1; l.import_key = k + '#' + seen[k]; });
     // NCC
     const newSup = [...supRows].filter(([ma]) => !suppliers.has(ma)).map(([ma, ten]) => ({ma_ncc:ma, ten_ncc:ten || ma}));
     const updSup = [...supRows].filter(([ma, ten]) => suppliers.has(ma) && ten && ten !== suppliers.get(ma).ten_ncc);
     if(newSup.length) must(await sb.from('suppliers').insert(newSup));
     for(const [ma, ten] of updSup) must(await sb.from('suppliers').update({ten_ncc:ten}).eq('ma_ncc', ma));
     // Dòng HĐ
-    const existing = await fetchIn('contract_lines', 'id,import_key', 'import_key', lines.map(l => l.import_key));
-    const exMap = new Map(existing.map(x => [x.import_key, x.id]));
-    const ins = lines.filter(l => !exMap.has(l.import_key)).map(l => ({...l, due_rule_confirmed:false, approval_status:'da_duyet', approved_by:me.id, approved_at:new Date().toISOString()}));
-    const upd = lines.filter(l => exMap.has(l.import_key));
+    const existing = (await fetchIn('contract_lines', '*', 'ma_ncc', [...supRows.keys()])).sort((a, b) => (b.active - a.active) || a.id - b.id);
+    const exMap = new Map(), occ = {};
+    existing.forEach(x => { const k = mkey(x); occ[k] = (occ[k] || 0) + 1; exMap.set(k + '#' + occ[k], x); });
+    const LBL = {so_hop_dong:'Số HĐ', loai_tt:'Loại TT', phu_luc:'Phụ lục', ngay_bat_dau:'Ngày bắt đầu', ngay_ket_thuc:'Ngày kết thúc', han_tt_text:'Hạn TT', lich_tt:'Lịch TT',
+      dvt:'ĐVT', sl:'SL', don_gia:'Đơn giá', thanh_tien:'Thành tiền', thue_suat:'Thuế suất', tien_thue:'Tiền thuế', tong_tien:'Tổng tiền', is_variable:'Không cố định',
+      department:'Bộ phận', chu_ky:'Chu kỳ', due_day:'Ngày hạn TT', due_month_offset:'Lệch tháng'};
+    const blank = x => x == null || x === '';
+    const same = (a, b) => { if(blank(a) && blank(b)) return true; if(blank(a) || blank(b)) return false;
+      if(typeof a !== 'boolean' && typeof b !== 'boolean' && !isNaN(Number(a)) && !isNaN(Number(b))) return Math.abs(Number(a) - Number(b)) < 0.005;
+      return String(a) === String(b); };
+    const showV = (k, v) => blank(v) ? '(trống)' : k.startsWith('ngay') ? fdate(v) : v === true ? 'Có' : v === false ? 'Không'
+      : k === 'thue_suat' ? Math.round(v * 10000) / 100 + '%' : ['sl','don_gia','thanh_tien','tien_thue','tong_tien'].includes(k) ? num(v) : v;
+    const ins = [], changes = []; let unchanged = 0;
+    for(const l of lines){
+      const {_expl, ...row} = l, old = exMap.get(l.import_key);
+      if(!old){ ins.push({...row, due_rule_confirmed:false, approval_status:'da_duyet', approved_by:me.id, approved_at:new Date().toISOString()}); continue; }
+      const patch = {}, diff = [];
+      for(const k of Object.keys(LBL)){
+        if(['due_day','due_month_offset','chu_ky','department'].includes(k) && !_expl[k]) continue;
+        if(blank(row[k]) && !blank(old[k]) && !(row.is_variable && ['don_gia','thanh_tien','tien_thue','tong_tien'].includes(k))) continue; // ô trống trong file không xóa dữ liệu cũ
+        if(!same(old[k], row[k])){ patch[k] = row[k]; diff.push(`${LBL[k]}: ${showV(k, old[k])} → ${showV(k, row[k])}`); }
+      }
+      if(old.import_key !== row.import_key) patch.import_key = row.import_key;
+      if(Object.keys(patch).length) must(await sb.from('contract_lines').update(patch).eq('id', old.id));
+      if(diff.length) changes.push(`<b>${esc(old.ma_ncc)}</b> – ${esc(old.noi_dung || '')}${old.so_hop_dong ? ' (' + esc(old.so_hop_dong) + ')' : ''}: ${esc(diff.join('; '))}`); else unchanged++;
+    }
     for(const c of chunk(ins, 200)) must(await sb.from('contract_lines').insert(c));
-    for(const l of upd){ const {due_day, due_month_offset, chu_ky, department, ...rest} = l; must(await sb.from('contract_lines').update(department ? {...rest, department} : rest).eq('id', exMap.get(l.import_key))); }
     await loadSuppliers();
-    nccState.flag = 'thieu_quy_tac';
+    await autoRematch();
+    nccState.flag = ins.length ? 'thieu_quy_tac' : '';
     await pageNcc();
-    $('#n-res').innerHTML = `<div class="hint">Import xong: <b>${newSup.length}</b> NCC mới, <b>${ins.length}</b> dòng HĐ mới, <b>${upd.length}</b> dòng cập nhật${skipped ? `, bỏ qua ${skipped} dòng không có Mã NCC` : ''}.<br>
-      Quy tắc hạn TT đã được điền sẵn từ cột "Sắp xếp lịch thanh toán" (Tuần 1→ngày 7, Tuần 2→14, Tuần 3→21, Tuần 4→28, "tháng sau"→tháng sau, "Quý"→chu kỳ quý). <b>Kiểm tra và bấm "Xác nhận quy tắc đã chọn"</b> để sinh lịch. Danh sách bên dưới đang lọc các dòng chưa xác nhận.</div>`;
-  }catch(e){ res.innerHTML = `<div class="hint err">${esc(e.message || e)}</div>`; showErr(e); }
+    $('#n-res').innerHTML = `<div class="hint">Import xong: <b>${newSup.length}</b> NCC mới, <b>${updSup.length}</b> NCC đổi tên, <b>${ins.length}</b> dòng HĐ mới, <b>${changes.length}</b> dòng HĐ cũ được cập nhật, ${unchanged} dòng không đổi${skipped ? `, bỏ qua ${skipped} dòng không có Mã NCC` : ''}.
+      ${changes.length ? `<details ${changes.length <= 10 ? 'open' : ''} style="margin:6px 0"><summary>Chi tiết thay đổi (${changes.length})</summary><div class="small">${changes.map(c => `<div>• ${c}</div>`).join('')}</div></details>
+      <div class="small">Các kỳ lịch TT <b>chưa thanh toán</b> đã được tính lại theo thông tin mới; kỳ đã thanh toán giữ nguyên.</div>` : ''}
+      <div class="small muted">Khớp dòng cũ theo: Nhóm + Mã NCC + Số HĐ + Phụ lục + Nội dung. Phụ lục mới (khác tên) sẽ thành dòng mới – nhớ nhập ngày kết thúc cho phụ lục cũ. Ô để trống trong file không xóa dữ liệu đang có.</div>
+      ${ins.length ? `Dòng mới: quy tắc hạn TT đã được điền sẵn từ cột` : '<span class="hidden">'} "Sắp xếp lịch thanh toán" (Tuần 1→ngày 7, Tuần 2→14, Tuần 3→21, Tuần 4→28, "tháng sau"→tháng sau, "Quý"→chu kỳ quý). <b>Kiểm tra và bấm "Xác nhận quy tắc đã chọn"</b> để sinh lịch. Danh sách bên dưới đang lọc các dòng chưa xác nhận.${ins.length ? '' : '</span>'}</div>`;
+  }catch(e){ res.innerHTML = `<div class="hint err">${esc(e.message || e)}</div>`; showErr(e); } finally { rt.busy--; }
 }
 
 /* ====================== YÊU CẦU THANH TOÁN TỪNG LẦN ====================== */
@@ -965,26 +1216,43 @@ async function pageYeuCau(){
       <input class="grow" id="r-q" placeholder="Tìm NCC, nội dung, số hóa đơn…" value="${esc(s.q)}">
       <select id="r-st">${opts(APPROVAL, s.status, 'Mọi trạng thái')}</select>
       ${isKT() ? `<select id="r-dept">${opts(DEPTS, s.dept, 'Tất cả bộ phận')}</select>` : ''}
-      <button class="btn" id="r-xls">Xuất Excel</button></div><div id="r-tbl"></div>`;
+      <button class="btn" id="r-xls">Xuất Excel</button></div>
+    <div class="toolbar no-print"><span class="sel-cnt"></span>${isKT() ? '<button class="btn" id="r-bok">Duyệt đã chọn</button><button class="btn" id="r-bno">Từ chối đã chọn</button>' : ''}
+      <button class="btn" id="r-bedit">Sửa hàng loạt</button><button class="btn danger" id="r-bdel">Xóa đã chọn</button></div><div id="r-tbl"></div>`;
   const draw = () => {
     s.q = $('#r-q').value; s.status = $('#r-st').value; s.dept = $('#r-dept')?.value || '';
     const f = reqs.filter(r => (!s.status || r.status === s.status) && (!s.dept || r.department === s.dept) && match(s.q, r.ma_ncc, supName(r.ma_ncc), r.noi_dung, r.invoice_no));
-    $('#r-tbl').innerHTML = `<div class="tbl-wrap"><table><thead><tr><th>Ngày tạo</th><th>Bộ phận</th><th>Nhóm</th><th>NCC</th><th>Nội dung</th><th class="num">Số tiền</th><th>Hạn TT</th><th>Số HĐ</th><th>Duyệt</th><th>Thanh toán</th><th></th></tr></thead><tbody>
-      ${f.map(r => { const x = sMap.get(r.id); return `<tr><td class="nowrap">${fdt(r.created_at)}</td><td>${esc(deptName(r.department) || 'Kế toán')}</td><td>${esc(r.nhom)}</td>
+    $('#r-tbl').innerHTML = `<div class="tbl-wrap"><table><thead><tr>${chkTh}<th>Ngày tạo</th><th>Bộ phận</th><th>Nhóm</th><th>NCC</th><th>Nội dung</th><th class="num">Số tiền</th><th>Hạn TT</th><th>Số HĐ</th><th>Duyệt</th><th>Thanh toán</th><th></th></tr></thead><tbody>
+      ${f.map(r => { const x = sMap.get(r.id); return `<tr>${chkTd(r.id)}<td class="nowrap">${fdt(r.created_at)}</td><td>${esc(deptName(r.department) || 'Kế toán')}</td><td>${esc(r.nhom)}</td>
         <td><b>${esc(r.ma_ncc)}</b><div class="small muted clip">${esc(supName(r.ma_ncc))}</div></td><td class="ellip">${esc(r.noi_dung)}${r.ly_do_tu_choi ? `<div class="small" style="color:var(--red)">Lý do từ chối: ${esc(r.ly_do_tu_choi)}</div>` : ''}</td>
         <td class="num">${num(r.amount)}</td><td class="nowrap">${fdate(r.due_date)}</td><td>${esc(r.invoice_no || '')}</td><td>${badge(APPROVAL, r.status)}</td>
         <td>${x ? badge(STATUS, x.status) + (x.paid_amount ? `<div class="small muted">${num(x.paid_amount)}</div>` : '') : ''}</td>
         <td class="nowrap">${pdfLink(r.pdf_path)}
           ${(isKT() || r.status === 'cho_duyet') ? `<button class="btn sm" data-re="${r.id}">Sửa</button>` : ''}
-          ${isKT() && r.status === 'cho_duyet' ? `<button class="btn sm" data-rok="${r.id}">Duyệt</button> <button class="btn sm danger" data-rno="${r.id}">Từ chối</button>` : ''}</td></tr>`; }).join('') || '<tr><td colspan="11" class="empty">Chưa có yêu cầu.</td></tr>'}
+          ${isKT() && r.status === 'cho_duyet' ? `<button class="btn sm" data-rok="${r.id}">Duyệt</button> <button class="btn sm danger" data-rno="${r.id}">Từ chối</button>` : ''}</td></tr>`; }).join('') || '<tr><td colspan="12" class="empty">Chưa có yêu cầu.</td></tr>'}
       </tbody></table></div>`;
     $$('[data-re]').forEach(b => b.onclick = () => reqDlg(cache.reqs.get(Number(b.dataset.re))));
-    $$('[data-rok]').forEach(b => b.onclick = async () => { try{ must(await sb.from('payment_requests').update({status:'da_duyet', approved_by:me.id, approved_at:new Date().toISOString(), ly_do_tu_choi:null}).eq('id', Number(b.dataset.rok))); toast('Đã duyệt – đã vào lịch thanh toán.'); route(); }catch(e){ showErr(e); } });
+    $$('[data-rok]').forEach(b => b.onclick = async () => { try{ must(await sb.from('payment_requests').update({status:'da_duyet', approved_by:me.id, approved_at:new Date().toISOString(), ly_do_tu_choi:null}).eq('id', Number(b.dataset.rok))); toast('Đã duyệt – đã vào lịch thanh toán.'); await autoRematch(); route(); }catch(e){ showErr(e); } });
     $$('[data-rno]').forEach(b => b.onclick = async () => { const why = prompt('Lý do từ chối:'); if(why == null) return; try{ must(await sb.from('payment_requests').update({status:'tu_choi', ly_do_tu_choi:why}).eq('id', Number(b.dataset.rno))); toast('Đã từ chối.'); route(); }catch(e){ showErr(e); } });
     $('#r-xls').onclick = () => exportXlsx('Yeu_cau_thanh_toan.xlsx', [['Yeu cau', f.map(r => { const x = sMap.get(r.id); return {'Ngày tạo':fdt(r.created_at), 'Bộ phận':deptName(r.department), 'Nhóm':r.nhom, 'Mã NCC':r.ma_ncc, 'Tên NCC':supName(r.ma_ncc), 'Nội dung':r.noi_dung, 'Số tiền':Number(r.amount), 'Hạn TT':fdate(r.due_date), 'Số hóa đơn':r.invoice_no, 'Duyệt':APPROVAL[r.status][0], 'Thanh toán':x ? STATUS[x.status][0] : '', 'Đã trả':x?.paid_amount}; })]]);
   };
   $('#r-q').oninput = debounce(draw); $('#r-st').onchange = draw; $('#r-dept') && ($('#r-dept').onchange = draw);
   $('#r-add').onclick = () => reqDlg(null);
+  const rsel = () => selIds().map(Number);
+  if(isKT()){
+    $('#r-bok').onclick = async () => { const ids = rsel().filter(id => cache.reqs.get(id).status !== 'da_duyet'); if(!needSel(ids)) return;
+      try{ bulkReport('Đã duyệt', await bulkUpdate('payment_requests', ids, {status:'da_duyet', approved_by:me.id, approved_at:new Date().toISOString(), ly_do_tu_choi:null}), ids.length); await autoRematch(); route(); }catch(e){ showErr(e); } };
+    $('#r-bno').onclick = async () => { const ids = rsel(); if(!needSel(ids)) return; const why = prompt('Lý do từ chối:'); if(why == null) return;
+      try{ bulkReport('Đã từ chối', await bulkUpdate('payment_requests', ids, {status:'tu_choi', ly_do_tu_choi:why}), ids.length); route(); }catch(e){ showErr(e); } };
+  }
+  $('#r-bedit').onclick = () => { const ids = rsel(); if(!needSel(ids)) return;
+    const f = [{k:'nhom', label:'Nhóm', type:'select', options:grpOpts('')}, {k:'due_date', label:'Hạn thanh toán', type:'date'}, {k:'invoice_no', label:'Số hóa đơn'}];
+    if(isKT()) f.push({k:'department', label:'Bộ phận đề nghị', type:'select', options:opts(DEPTS, '', '(Kế toán)')});
+    bulkEditDlg('Sửa yêu cầu thanh toán', ids.length, f, async patch => bulkReport('Đã cập nhật', await bulkUpdate('payment_requests', ids, patch), ids.length)); };
+  $('#r-bdel').onclick = async () => { const ids = rsel(); if(!needSel(ids)) return;
+    const paid = ids.filter(id => Number(sMap.get(id)?.paid_amount) > 0), del = ids.filter(id => !paid.includes(id));
+    if(!confirm(`Xóa ${del.length} yêu cầu thanh toán?` + (paid.length ? `\n${paid.length} yêu cầu đã thanh toán sẽ không bị xóa.` : ''))) return;
+    const r = await bulkDelete('payment_requests', del); bulkReport('Đã xóa', r.ok, del.length, r.fail); route(); };
   draw();
 }
 function reqDlg(r){
@@ -1047,20 +1315,26 @@ async function pageDoiChieu(){
       <label style="margin:0">Từ <input type="date" id="d-from" value="${s.from}"></label><label style="margin:0">đến <input type="date" id="d-to" value="${s.to}"></label>
       <select id="d-flag">${opts({trung:['Nghi trùng'], lech_gia:FLAGS.lech_gia, khong_ky:FLAGS.khong_ky}, s.flag, 'Mọi cảnh báo')}</select>
       <button class="btn" id="d-xls">Xuất Excel</button></div>
+    <div class="toolbar no-print"><span class="sel-cnt"></span>
+      ${s.tab === 'goi_y' ? '<button class="btn" id="d-bok">Xác nhận gợi ý đã chọn</button>' : ''}
+      ${s.tab === 'chua_doi_chieu' || s.tab === 'goi_y' ? '<button class="btn" id="d-bskip">Bỏ qua đã chọn</button>' : ''}
+      ${s.tab === 'da_doi_chieu' || s.tab === 'bo_qua' ? '<button class="btn" id="d-bun">Hủy đối chiếu đã chọn</button>' : ''}
+      <button class="btn" id="d-bnote">Sửa ghi chú hàng loạt</button><button class="btn danger" id="d-bdel">Xóa đã chọn</button></div>
     <div id="d-tbl"></div>`;
   $$('.tabs button').forEach(b => b.onclick = () => { s.tab = b.dataset.t; pageDoiChieu(); });
   $('#d-imp').onclick = async () => { const f = $('#d-file').files[0]; if(!f) return toast('Chọn file Excel trước.'); await importPayments(f, $('#d-type').value); };
-  $('#d-run').onclick = async () => { try{ const r = await runAutoMatch(); dcState._last = r; await pageDoiChieu(); }catch(e){ showErr(e); } };
+  $('#d-run').onclick = async () => { rt.busy++; try{ const r = await runAutoMatch(); dcState._last = r; await pageDoiChieu(); }catch(e){ showErr(e); } finally { rt.busy--; } };
   const itemLabel = id => { const x = cache.sched.get(id); return x ? `${x.ma_ncc} · ${x.nhom} · ${esc(x.noi_dung || '')} · kỳ ${fper(x.fee_period)}` : '#' + id; };
   const draw = () => {
     s.q = $('#d-q').value; s.from = $('#d-from').value; s.to = $('#d-to').value; s.flag = $('#d-flag').value;
     const f = pays.filter(p => p.match_status === s.tab && (!s.from || p.ngay_hach_toan >= s.from) && (!s.to || p.ngay_hach_toan <= s.to)
       && (!s.flag || p.flags.includes(s.flag)) && match(s.q, p.so_chung_tu, p.ma_doi_tuong, p.doi_tuong, p.dien_giai));
-    $('#d-tbl').innerHTML = `<div class="tbl-wrap"><table><thead><tr><th>Số CT</th><th>Ngày HT</th><th>NCC</th><th>Diễn giải</th><th class="num">Số tiền</th><th>Kỳ phí / HĐ đọc được</th><th>Cảnh báo</th><th>${s.tab === 'goi_y' ? 'Gợi ý phân bổ' : 'Đối chiếu với'}</th><th></th></tr></thead><tbody>
+    setTimeout(updSelCount);
+    $('#d-tbl').innerHTML = `<div class="tbl-wrap"><table><thead><tr>${chkTh}<th>Số CT</th><th>Ngày HT</th><th>NCC</th><th>Diễn giải</th><th class="num">Số tiền</th><th>Kỳ phí / HĐ đọc được</th><th>Cảnh báo</th><th>${s.tab === 'goi_y' ? 'Gợi ý phân bổ' : 'Đối chiếu với'}</th><th></th></tr></thead><tbody>
       ${f.map(p => { const ms = mBy[p.id] || []; const sug = p.suggestion?.items || [];
         const target = s.tab === 'goi_y' ? sug.map(x => `<div class="small">${itemLabel(x.id)}: <b>${num(x.amount)}</b></div>`).join('') + (p.suggestion?.diff ? `<div class="small" style="color:var(--amber)">Chênh lệch: ${num(p.suggestion.diff)}</div>` : '')
           : ms.map(m => `<div class="small">${itemLabel(m.schedule_id)}: <b>${num(m.amount)}</b></div>`).join('') + (p.match_method ? `<div class="small muted">${METHOD[p.match_method]}</div>` : '') + (p.ghi_chu ? `<div class="small muted">${esc(p.ghi_chu)}</div>` : '');
-        return `<tr><td class="nowrap"><b>${esc(p.so_chung_tu)}</b><div class="small muted">${p.loai}</div></td><td class="nowrap">${fdate(p.ngay_hach_toan)}</td>
+        return `<tr>${chkTd(p.id)}<td class="nowrap"><b>${esc(p.so_chung_tu)}</b><div class="small muted">${p.loai}</div></td><td class="nowrap">${fdate(p.ngay_hach_toan)}</td>
           <td><b>${esc(p.ma_doi_tuong)}</b><div class="small muted clip">${esc(supName(p.ma_doi_tuong))}</div></td><td class="ellip small">${esc(p.dien_giai)}</td><td class="num">${num(p.so_tien)}</td>
           <td class="small">${p.parsed_periods.map(fper).join(', ') || '—'}<div class="muted">${p.parsed_invoice_nos.length ? 'HĐ ' + esc(p.parsed_invoice_nos.join(', ')) : ''}</div></td>
           <td>${flagsHtml(p.flags)}</td><td>${target}</td>
@@ -1069,7 +1343,7 @@ async function pageDoiChieu(){
             ${s.tab !== 'bo_qua' ? `<button class="btn sm" data-pal="${p.id}">Phân bổ thủ công</button>` : ''}
             ${s.tab === 'da_doi_chieu' || s.tab === 'bo_qua' ? `<button class="btn sm" data-pun="${p.id}">Hủy đối chiếu</button>` : ''}
             ${s.tab === 'chua_doi_chieu' || s.tab === 'goi_y' ? `<button class="btn sm" data-pskip="${p.id}" title="Không thuộc lịch thanh toán: đặt cọc, hoàn ứng, chi khác…">Bỏ qua</button>` : ''}
-            <button class="btn sm danger" data-pdel="${p.id}" title="Xóa chứng từ">×</button></td></tr>`; }).join('') || '<tr><td colspan="9" class="empty">Không có chứng từ.</td></tr>'}
+            <button class="btn sm danger" data-pdel="${p.id}" title="Xóa chứng từ">×</button></td></tr>`; }).join('') || '<tr><td colspan="10" class="empty">Không có chứng từ.</td></tr>'}
       </tbody></table></div>`;
     $$('[data-pok]').forEach(b => b.onclick = () => confirmSuggestion(Number(b.dataset.pok)));
     $$('[data-pno]').forEach(b => b.onclick = async () => { const p = cache.pays.get(Number(b.dataset.pno)); try{ must(await sb.from('payments').update({match_status:'chua_doi_chieu', suggestion:null, flags:[...new Set([...p.flags, 'can_thu_cong'])]}).eq('id', p.id)); route(); }catch(e){ showErr(e); } });
@@ -1081,6 +1355,22 @@ async function pageDoiChieu(){
     $('#d-xls').onclick = () => exportXlsx('Doi_chieu_UNC_PC.xlsx', [['Chung tu', f.map(p => ({'Loại':p.loai, 'Số chứng từ':p.so_chung_tu, 'Ngày hạch toán':fdate(p.ngay_hach_toan), 'Mã đối tượng':p.ma_doi_tuong, 'Đối tượng':p.doi_tuong, 'Diễn giải':p.dien_giai, 'Số tiền':Number(p.so_tien), 'Kỳ phí':p.parsed_periods.map(fper).join(', '), 'Số HĐ':p.parsed_invoice_nos.join(', '), 'Trạng thái':MATCH[p.match_status][0], 'Cảnh báo':p.flags.map(x => FLAGS[x]?.[0] || x).join(', '), 'Đối chiếu':(mBy[p.id] || []).map(m => { const x = cache.sched.get(m.schedule_id); return x ? `${x.nhom} ${fper(x.fee_period)} ${x.noi_dung}: ${m.amount}` : ''; }).join(' | ')}))]]);
   };
   $('#d-q').oninput = debounce(draw); ['#d-from','#d-to','#d-flag'].forEach(id => $(id).onchange = draw);
+  const dsel = () => selIds().map(Number);
+  const many = async (fn, verb) => { const ids = dsel(); if(!needSel(ids)) return; rt.busy++;
+    try{ let n = 0; for(const id of ids){ await fn(id); n++; } toast(`${verb} ${n} chứng từ.`); }catch(e){ showErr(e); } finally { rt.busy--; route(); } };
+  $('#d-bok')?.addEventListener('click', () => many(async id => { const p = cache.pays.get(id), items = p.suggestion?.items || []; if(!items.length) return;
+    must(await sb.from('payment_matches').delete().eq('payment_id', id));
+    for(const it of items){ const x = cache.sched.get(it.id); if(x && x.expected_amount == null) must(await sb.from('payment_schedule').update({expected_amount:it.amount}).eq('id', it.id)); }
+    must(await sb.from('payment_matches').insert(items.map(a => ({payment_id:id, schedule_id:a.id, amount:a.amount}))));
+    must(await sb.from('payments').update({match_status:'da_doi_chieu', match_method:'goi_y', suggestion:null}).eq('id', id)); }, 'Đã xác nhận'));
+  $('#d-bskip')?.addEventListener('click', () => { const why = prompt('Ghi chú (vd: đặt cọc, hoàn ứng, chi khác):', ''); if(why == null) return;
+    many(async id => must(await sb.from('payments').update({match_status:'bo_qua', suggestion:null, ghi_chu:why || null}).eq('id', id)), 'Đã bỏ qua'); });
+  $('#d-bun')?.addEventListener('click', () => { if(!confirm('Hủy đối chiếu các chứng từ đã chọn?')) return;
+    many(async id => { must(await sb.from('payment_matches').delete().eq('payment_id', id)); must(await sb.from('payments').update({match_status:'chua_doi_chieu', match_method:null, suggestion:null}).eq('id', id)); }, 'Đã hủy đối chiếu'); });
+  $('#d-bnote').onclick = () => { const ids = dsel(); if(!needSel(ids)) return;
+    bulkEditDlg('Sửa chứng từ', ids.length, [{k:'ghi_chu', label:'Ghi chú'}], async patch => bulkReport('Đã cập nhật', await bulkUpdate('payments', ids, patch), ids.length)); };
+  $('#d-bdel').onclick = () => { if(!confirm('Xóa các chứng từ đã chọn (kèm phân bổ)? Số đã trả của các kỳ liên quan sẽ được tính lại.')) return;
+    many(async id => must(await sb.from('payments').delete().eq('id', id)), 'Đã xóa'); };
   draw();
   if(s._last){ showMatchResult(s._last); s._last = null; }
 }
@@ -1088,6 +1378,7 @@ function showMatchResult(r){ if(!r) return; const el = $('#d-res'); if(el) el.in
 
 async function importPayments(file, forced){
   const el = $('#d-res'); el.innerHTML = '<div class="hint">Đang đọc file…</div>';
+  rt.busy++;
   try{
     const S = await readSheet(file, 'so chung tu');
     const type = forced || (S.col('so tai khoan nh', 'ngay chung tu') >= 0 ? 'UNC' : 'PC');
@@ -1115,7 +1406,7 @@ async function importPayments(file, forced){
     const r = await runAutoMatch(); r.importMsg = importMsg;
     dcState._last = r; dcState.tab = 'chua_doi_chieu';
     await pageDoiChieu();
-  }catch(e){ el.innerHTML = `<div class="hint err">${esc(e.message || e)}</div>`; showErr(e); }
+  }catch(e){ el.innerHTML = `<div class="hint err">${esc(e.message || e)}</div>`; showErr(e); } finally { rt.busy--; }
 }
 
 /* ---------- Thuật toán đối chiếu ----------
@@ -1190,6 +1481,17 @@ async function runAutoMatch(){
     if(status === 'da_doi_chieu') res.auto++; else if(status === 'goi_y') res.sug++; else res.manual++;
   }
   return res;
+}
+// Tự đối chiếu lại (gạch nợ) các chứng từ chưa khớp – chạy sau khi hợp đồng/lịch thay đổi và khi kế toán đăng nhập
+async function autoRematch(){
+  if(!isKT()) return;
+  try{
+    const {count} = await sb.from('payments').select('id', {count:'exact', head:true}).eq('match_status', 'chua_doi_chieu');
+    if(!count) return;
+    rt.busy++;
+    const r = await runAutoMatch();
+    if(r.auto || r.sug) toast(`Đã tự động gạch nợ ${r.auto} chứng từ${r.sug ? `, ${r.sug} gợi ý chờ xác nhận` : ''}.`);
+  }catch(e){ console.warn(e); } finally { if(rt.busy) rt.busy--; }
 }
 async function confirmSuggestion(pid){
   const p = cache.pays.get(pid); const items = p.suggestion?.items || [];
@@ -1311,6 +1613,107 @@ async function pageTuoiNo(){
   draw();
 }
 
+/* ====================== SỔ CHI TIẾT CÔNG NỢ PHẢI TRẢ ======================
+   Dư đầu kỳ  = phải trả các khoản có hạn TT trước "Từ ngày" − đã trả bằng chứng từ hạch toán trước "Từ ngày"
+   Phát sinh  = phải trả các khoản có hạn TT trong kỳ
+   Thanh toán = số tiền chứng từ (UNC/PC) hạch toán trong kỳ đã phân bổ cho NCC
+   Dư cuối kỳ = Dư đầu kỳ + Phát sinh − Thanh toán */
+const LOAI_CT = {UNC:'Ủy nhiệm chi (tiền gửi NH)', PC:'Phiếu chi (tiền mặt)'};
+const sclState = {from:'', to:'', nhom:'', ncc:'', only:'', detail:true};
+async function pageSoCongNo(){
+  const s = sclState, today = todayISO();
+  if(!s.from){ s.from = today.slice(0,7) + '-01'; s.to = `${today.slice(0,7)}-${pad(lastDay(today.slice(0,7)))}`; }
+  await loadSuppliers();
+  const [items, matches, pays] = await Promise.all([loadSchedule(),
+    fetchAll(() => sb.from('payment_matches').select('id,payment_id,schedule_id,amount').order('id')),
+    fetchAll(() => sb.from('payments').select('id,loai,so_chung_tu,ngay_hach_toan,so_tien,dien_giai,ma_doi_tuong').order('id'))]);
+  const payMap = new Map(pays.map(p => [p.id, p]));
+  const mBy = {}; matches.forEach(m => { const p = payMap.get(m.payment_id); if(p) (mBy[m.schedule_id] = mBy[m.schedule_id] || []).push({...m, p}); });
+  Object.values(mBy).forEach(a => a.sort((x, y) => x.p.ngay_hach_toan.localeCompare(y.p.ngay_hach_toan)));
+  $('#page').innerHTML = `
+    <div class="toolbar">
+      <label style="margin:0">Từ ngày <input type="date" id="c-from" value="${s.from}"></label>
+      <label style="margin:0">Đến ngày <input type="date" id="c-to" value="${s.to}"></label>
+      <select id="c-quick"><option value="">Chọn nhanh kỳ…</option><option value="m0">Tháng này</option><option value="m1">Tháng trước</option><option value="q0">Quý này</option><option value="y0">Năm nay</option></select>
+      <select id="c-nhom">${grpOpts(s.nhom, 'Tất cả nhóm')}</select>
+      <select id="c-ncc"><option value="">Tất cả NCC</option>${[...suppliers.values()].map(x => `<option value="${esc(x.ma_ncc)}" ${x.ma_ncc === s.ncc ? 'selected' : ''}>${esc(x.ma_ncc)} – ${esc((x.ten_ncc || '').slice(0, 40))}</option>`).join('')}</select>
+      <select id="c-only"><option value="">Tất cả khoản</option><option value="no" ${s.only==='no'?'selected':''}>Chỉ khoản còn nợ</option><option value="paid" ${s.only==='paid'?'selected':''}>Chỉ khoản đã thanh toán</option></select>
+      <label style="margin:0;display:flex;gap:4px;align-items:center"><input type="checkbox" id="c-det" ${s.detail?'checked':''}> Hiện chi tiết</label>
+      <button class="btn" id="c-xls">Xuất Excel</button><button class="btn" onclick="window.print()">In / Lưu PDF</button></div>
+    <div class="print-only"><h2>SỔ CHI TIẾT CÔNG NỢ PHẢI TRẢ NHÀ CUNG CẤP</h2><p>Plaza Hotel Co., Ltd · Từ ngày ${fdate(s.from)} đến ngày ${fdate(s.to)}${s.ncc ? ' · NCC: ' + esc(s.ncc) : ''}${s.nhom ? ' · Nhóm: ' + s.nhom : ''}</p></div>
+    <div id="c-body"></div>`;
+  const reload = () => { s.from = $('#c-from').value; s.to = $('#c-to').value; s.nhom = $('#c-nhom').value; s.ncc = $('#c-ncc').value; s.only = $('#c-only').value; s.detail = $('#c-det').checked;
+    if(!s.from || !s.to || s.from > s.to) return toast('Chọn "Từ ngày" ≤ "Đến ngày".', 'error'); draw(); };
+  ['#c-from','#c-to','#c-nhom','#c-ncc','#c-only','#c-det'].forEach(id => $(id).onchange = reload);
+  $('#c-quick').onchange = e => { const v = e.target.value; if(!v) return; const ym = today.slice(0,7), y = today.slice(0,4); let a, b;
+    if(v === 'm0'){ a = ym; b = ym; } else if(v === 'm1'){ a = b = monthAdd(ym, -1); }
+    else if(v === 'q0'){ const q = Math.floor((Number(ym.slice(5)) - 1) / 3) * 3 + 1; a = `${y}-${pad(q)}`; b = monthAdd(a, 2); } else { a = `${y}-01`; b = `${y}-12`; }
+    $('#c-from').value = a + '-01'; $('#c-to').value = `${b}-${pad(lastDay(b))}`; e.target.value = ''; reload(); };
+  const draw = () => {
+    const F = s.from, T = s.to;
+    const base = items.filter(i => (!s.nhom || i.nhom === s.nhom) && (!s.ncc || i.ma_ncc === s.ncc));
+    const exp = i => Number(i.expected_amount) || 0;
+    // tổng hợp theo NCC
+    const sum1 = {};
+    for(const i of base){
+      const x = sum1[i.ma_ncc] = sum1[i.ma_ncc] || {ma:i.ma_ncc, ten:i.ten_ncc, dk:0, ps:0, tt:0, nhom:new Set()};
+      x.nhom.add(i.nhom);
+      if(i.due_date < F) x.dk += exp(i); else if(i.due_date <= T) x.ps += exp(i);
+      for(const m of mBy[i.id] || []){ const d = m.p.ngay_hach_toan; if(d < F) x.dk -= Number(m.amount); else if(d <= T) x.tt += Number(m.amount); }
+    }
+    const S1 = Object.values(sum1).map(x => ({...x, ck: x.dk + x.ps - x.tt})).filter(x => Math.abs(x.dk) > 0.5 || x.ps || x.tt || Math.abs(x.ck) > 0.5).sort((a, b) => a.ma.localeCompare(b.ma));
+    const tot = k => sum(S1, x => x[k]);
+    // chi tiết: khoản có hạn TT trong kỳ, hoặc được thanh toán trong kỳ
+    const det = base.filter(i => (i.due_date >= F && i.due_date <= T) || (mBy[i.id] || []).some(m => m.p.ngay_hach_toan >= F && m.p.ngay_hach_toan <= T))
+      .filter(i => !s.only || (s.only === 'paid' ? i.status === 'da_thanh_toan' : i.status !== 'da_thanh_toan'))
+      .sort((a, b) => a.ma_ncc.localeCompare(b.ma_ncc) || a.due_date.localeCompare(b.due_date));
+    const groups = {}; det.forEach(i => (groups[i.ma_ncc] = groups[i.ma_ncc] || []).push(i));
+    const pl = m => `<div class="nowrap"><b>${esc(m.p.so_chung_tu)}</b> <span class="badge b-${m.p.loai === 'PC' ? 'amber' : 'blue'}">${m.p.loai === 'PC' ? 'Phiếu chi' : 'UNC'}</span></div>`;
+    let rows = '';
+    for(const [ma, list] of Object.entries(groups)){
+      rows += `<tr><td colspan="13" style="background:var(--primary-soft)"><b>${esc(ma)}</b> – ${esc(supName(ma))}</td></tr>`;
+      rows += list.map(i => { const ms = mBy[i.id] || [];
+        return `<tr><td>${esc(i.nhom)}</td><td><b>${esc(i.ma_ncc)}</b></td><td class="ellip">${esc(i.noi_dung || '')}${i.request_id ? ' <span class="badge b-blue">Từng lần</span>' : ''}<div class="small muted">${esc(i.so_hop_dong || '')}${i.invoice_no ? ' · HĐ ' + esc(i.invoice_no) : ''}</div></td>
+          <td class="nowrap">${fper(i.fee_period)}</td><td class="nowrap">${fdate(i.due_date)}</td>
+          <td class="num">${i.expected_amount == null ? '<span class="muted">Chờ số tiền</span>' : num(i.expected_amount)}</td>
+          <td class="nowrap">${ms.map(m => `<div>${fdate(m.p.ngay_hach_toan)}</div>`).join('')}</td>
+          <td>${ms.map(pl).join('')}</td>
+          <td class="num">${ms.map(m => `<div>${num(m.amount)}</div>`).join('')}</td>
+          <td class="num">${num(i.paid_amount) || ''}</td><td class="num">${i.remaining ? num(i.remaining) : ''}</td>
+          <td>${badge(STATUS, i.status)}</td><td class="num">${i.days_late > 0 && i.status !== 'chua_den_han' ? i.days_late : ''}</td></tr>`; }).join('');
+      rows += `<tr><td colspan="5" class="right"><i>Cộng ${esc(ma)}</i></td><td class="num"><b>${num(sum(list, exp))}</b></td><td colspan="3"></td><td class="num"><b>${num(sum(list, i => i.paid_amount))}</b></td><td class="num"><b>${num(sum(list, i => i.remaining))}</b></td><td colspan="2"></td></tr>`;
+    }
+    $('#c-body').innerHTML = `
+      <div class="kpis">
+        <div class="kpi blue"><div class="s">Dư nợ đầu kỳ (${fdate(F)})</div><div class="v" style="font-size:18px">${vnd(tot('dk'))}</div></div>
+        <div class="kpi amber"><div class="s">Phát sinh phải trả trong kỳ</div><div class="v" style="font-size:18px">${vnd(tot('ps'))}</div></div>
+        <div class="kpi green"><div class="s">Đã thanh toán trong kỳ</div><div class="v" style="font-size:18px">${vnd(tot('tt'))}</div></div>
+        <div class="kpi red"><div class="s">Dư nợ cuối kỳ (${fdate(T)})</div><div class="v" style="font-size:18px">${vnd(tot('ck'))}</div></div></div>
+      <div class="card"><h3>Tổng hợp công nợ theo nhà cung cấp</h3><p class="small muted">Dư cuối kỳ = Dư đầu kỳ + Phát sinh − Thanh toán. Phát sinh tính theo hạn thanh toán; thanh toán tính theo ngày hạch toán chứng từ. <b>Số âm</b> = đã trả trước hạn (hoặc trả thừa).</p>
+        <div class="tbl-wrap"><table><thead><tr><th>Mã NCC</th><th>Tên NCC</th><th>Nhóm</th><th class="num">Dư đầu kỳ</th><th class="num">Phát sinh</th><th class="num">Đã thanh toán</th><th class="num">Dư cuối kỳ</th></tr></thead><tbody>
+        ${S1.map(x => `<tr><td><b>${esc(x.ma)}</b></td><td class="ellip">${esc(x.ten || '')}</td><td>${[...x.nhom].join(', ')}</td><td class="num">${num(x.dk)}</td><td class="num">${num(x.ps)}</td><td class="num">${num(x.tt)}</td><td class="num" style="${x.ck < -0.5 ? 'color:var(--blue)' : ''}"><b>${num(x.ck)}</b>${x.ck < -0.5 ? '<div class="small">trả trước</div>' : ''}</td></tr>`).join('') || '<tr><td colspan="7" class="empty">Không có số liệu trong kỳ.</td></tr>'}</tbody>
+        <tfoot><tr><td colspan="3">TỔNG CỘNG</td><td class="num">${num(tot('dk'))}</td><td class="num">${num(tot('ps'))}</td><td class="num">${num(tot('tt'))}</td><td class="num">${num(tot('ck'))}</td></tr></tfoot></table></div></div>
+      ${s.detail ? `<div class="card"><h3>Chi tiết công nợ & chứng từ thanh toán (${det.length} khoản)</h3><p class="small muted">Gồm các khoản có hạn TT trong kỳ hoặc được thanh toán trong kỳ. Một khoản trả bằng nhiều chứng từ sẽ hiện nhiều dòng chứng từ.</p>
+        <div class="tbl-wrap"><table><thead><tr><th>Nhóm</th><th>NCC</th><th>Nội dung</th><th>Kỳ phí</th><th>Hạn TT</th><th class="num">Phải trả</th><th>Ngày thanh toán</th><th>Số chứng từ</th><th class="num">Số tiền CT</th><th class="num">Đã trả</th><th class="num">Còn nợ</th><th>Trạng thái</th><th class="num">Ngày trễ</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="13" class="empty">Không có khoản nào.</td></tr>'}</tbody></table></div></div>` : ''}`;
+    $('#c-xls').onclick = () => {
+      const xr = [];
+      det.forEach(i => { const ms = mBy[i.id] || [];
+        const b = {'Nhóm':i.nhom, 'Mã NCC':i.ma_ncc, 'Tên NCC':i.ten_ncc, 'Số HĐ':i.so_hop_dong, 'Nội dung':i.noi_dung, 'Kỳ phí':fper(i.fee_period), 'Hạn TT':fdate(i.due_date), 'Phải trả':i.expected_amount == null ? null : Number(i.expected_amount)};
+        const tail = {'Tổng đã trả':Number(i.paid_amount), 'Còn nợ':i.remaining == null ? null : Number(i.remaining), 'Trạng thái':STATUS[i.status][0], 'Số ngày trễ':i.days_late > 0 && i.status !== 'chua_den_han' ? i.days_late : null};
+        if(!ms.length) xr.push({...b, 'Ngày thanh toán':'', 'Loại chứng từ':'', 'Số chứng từ':'', 'Số tiền phân bổ':null, 'Diễn giải chứng từ':'', ...tail});
+        ms.forEach((m, k) => xr.push({...(k ? {'Nhóm':i.nhom, 'Mã NCC':i.ma_ncc, 'Tên NCC':i.ten_ncc, 'Số HĐ':i.so_hop_dong, 'Nội dung':i.noi_dung, 'Kỳ phí':fper(i.fee_period), 'Hạn TT':fdate(i.due_date), 'Phải trả':null} : b),
+          'Ngày thanh toán':fdate(m.p.ngay_hach_toan), 'Loại chứng từ':LOAI_CT[m.p.loai], 'Số chứng từ':m.p.so_chung_tu, 'Số tiền phân bổ':Number(m.amount), 'Diễn giải chứng từ':m.p.dien_giai, ...(k ? {} : tail)})); });
+      const title = `SỔ CHI TIẾT CÔNG NỢ PHẢI TRẢ – TỪ ${fdate(F)} ĐẾN ${fdate(T)}`;
+      exportXlsx(`So_chi_tiet_cong_no_${F}_${T}.xlsx`, [
+        ['Tong hop theo NCC', [...S1.map(x => ({'Mã NCC':x.ma, 'Tên NCC':x.ten, 'Nhóm':[...x.nhom].join(', '), 'Dư đầu kỳ':Math.round(x.dk), 'Phát sinh':Math.round(x.ps), 'Đã thanh toán':Math.round(x.tt), 'Dư cuối kỳ':Math.round(x.ck)})),
+          {'Mã NCC':'TỔNG CỘNG', 'Dư đầu kỳ':Math.round(tot('dk')), 'Phát sinh':Math.round(tot('ps')), 'Đã thanh toán':Math.round(tot('tt')), 'Dư cuối kỳ':Math.round(tot('ck'))}], title],
+        ['Chi tiet cong no', xr, title]]);
+    };
+  };
+  draw();
+}
+
 /* ====================== NGƯỜI DÙNG & CÀI ĐẶT ====================== */
 async function pageUsers(){
   const users = must(await sb.from('profiles').select('*').order('created_at'));
@@ -1352,7 +1755,7 @@ async function pageAudit(){
   $('#g-q').oninput = debounce(draw); $('#g-t').onchange = draw; draw();
 }
 
-document.addEventListener('keydown', e => { if(e.key === 'Escape') closeModal(); });
+document.addEventListener('keydown', e => { if(e.key === 'Escape'){ closeColFilter(); closeModal(); } });
 boot();
 </script>
 </body>
